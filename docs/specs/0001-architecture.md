@@ -272,10 +272,37 @@ Resolve the executable in this order and stop at the first that reports 22.19.0 
 1. An explicit path from the app's settings file.
 2. `node` on `PATH`.
 3. `/usr/bin/node`, `/usr/bin/node-22`, `/usr/local/bin/node`.
-4. nvm, fnm, volta, and asdf install directories under the user's home.
+4. Version manager install directories under the user's home.
 
 If none qualifies, show a dialog naming the requirement and how to install it, then exit. Do not
 fail with a stack trace.
+
+#### Do not persist an ephemeral shim path
+
+This machine has two Node installs, and the order above reaches the wrong one first:
+
+| Source | Path | Version |
+| --- | --- | --- |
+| Fedora `nodejs22` RPM | `/usr/bin/node` | 22.23.1 |
+| fnm | `~/.local/share/fnm/node-versions/v24.18.0/installation/bin/node` | 24.18.0 |
+
+An interactive shell resolves `node` through fnm's multishell shim at
+`/run/user/1000/fnm_multishells/<id>/bin/node`. That directory is created per shell and
+disappears when the shell exits. A `.desktop` launch never sees it and gets `/usr/bin/node`
+instead.
+
+So a resolution triggered from a terminal and one triggered from the app menu can return
+different binaries, and a shim path stored today can be dangling tomorrow. When persisting the
+resolved path, skip it if it matches an ephemeral shim location:
+
+- `/run/user/*/fnm_multishells/*`
+- any path under `/tmp` or `$XDG_RUNTIME_DIR`
+
+Resolve such a shim to its real target first, using `readlink -f`, and store that. If the target
+is outside a stable location, fall through to the next candidate instead of storing it.
+
+Both versions satisfy pi's `>= 22.19.0`, so either works. The rule exists so the stored path
+still resolves after a reboot.
 
 ### 9.3 When the sidecar writes
 

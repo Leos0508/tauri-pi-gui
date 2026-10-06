@@ -39,12 +39,32 @@ Observable, in order of how much they matter:
 
 ## Prerequisites
 
-- `rustup` and `cargo`, currently missing on the development machine.
-- Node 22.19.0 or newer, present at `/usr/bin/node` (22.23.1).
-- `pnpm`, present at 12.6.0.
+Verified on 2026-10-06:
 
-Node 22.23 runs TypeScript directly, verified with a `.ts` file and no flag. Use that for
-development and for tests. Ship a bundle later, in slice 003, when packaging starts.
+| Requirement | State |
+| --- | --- |
+| Rust | `cargo` 1.99.0, `rustc` 1.99.0 via rustup 1.29.1 |
+| `cargo check` in `src-tauri` | passes, 62 s cold |
+| Node | `/usr/bin/node` 22.23.1 from the Fedora `nodejs22` RPM, plus fnm's 24.18.0 |
+| pnpm | 12.6.0 |
+| Tauri CLI | 2.12.1, from `node_modules` |
+| `WebKitWebDriver` | `/usr/bin/WebKitWebDriver` |
+| Tauri Linux deps | webkit2gtk-4.1 2.54.0, gtk+-3.0 3.24.52, libsoup-3.0 3.6.6, librsvg-2.0 2.62.3, openssl 3.5.9 |
+
+Notes:
+
+- `cargo` lives at `~/.cargo/bin` and is added to `PATH` by `~/.cargo/env`, sourced from
+  `.bashrc` and `.zshrc`. A non-interactive shell does not have it. Source `~/.cargo/env` or
+  use a login shell when running `cargo` from a script.
+- `ayatana-appindicator3-0.1` has no `pkg-config` entry and `libayatana-appindicator-gtk3-devel`
+  is not in the Fedora 44 repositories. Fedora provides `appindicator3-0.1.pc` from
+  `libappindicator-gtk3-devel` instead. `cargo check` passes anyway, because the tray feature is
+  off. Do not enable `tauri`'s `tray-icon` feature without resolving this, and note that v1 has
+  no tray.
+- Node 22.23 runs TypeScript directly, verified with a `.ts` file and no flag. Use that for
+  development and tests. Ship a bundle later, in slice 003, when packaging starts.
+- The sidecar must not inherit an fnm multishell `PATH`. Resolution and persistence rules are in
+  [0001 section 9.2](0001-architecture.md).
 
 ## Deliverables
 
@@ -357,7 +377,7 @@ Each step ends with a check. Do not start the next one until it passes.
 | # | Step | Check |
 | --- | --- | --- |
 | 1 | Remove the scaffold demo: `greet`, `App.tsx`, `App.css`, `src/assets/`, `public/vite.svg`, `public/tauri.svg` | `pnpm build` succeeds |
-| 2 | Install `rustup` and `cargo` | `cargo --version`, then `pnpm tauri dev` opens a window |
+| 2 | Rust toolchain | **Done.** `cargo check` passes in 62 s |
 | 3 | Write `shared/protocol.ts` and `shared/channels.ts` | `pnpm typecheck` passes |
 | 4 | Write `sidecar/src/{log,transport,index}.ts` and `handlers/app.ts` | `node sidecar/src/index.ts`, type a ping line, get a response |
 | 5 | Write `sidecar/test/protocol.test.ts` | `node --test sidecar/test` passes |
@@ -368,8 +388,8 @@ Each step ends with a check. Do not start the next one until it passes.
 | 10 | Write the minimal renderer and `src/ipc/transport.ts` | Ping works and shows a latency |
 | 11 | Write the protocol test and run the manual orphan checks | `pgrep -f pi-sidecar` is empty after close |
 
-Steps 1 through 3 have no runtime dependency and can be done before `rustup` finishes
-installing.
+Step 2 is done. Steps 1 and 3 are independent of each other and of the toolchain, so they can
+happen in either order.
 
 ## Verification
 
