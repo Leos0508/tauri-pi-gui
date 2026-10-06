@@ -61,7 +61,7 @@ These were settled during planning. Each has a consequence worth remembering.
 | pi runtime | Node sidecar process | pi runs unmodified on the Node version its maintainers support. No compatibility layer to debug. |
 | pi integration | Vendored `pi-sdk-driver` | `pi-gui` already solved session supervision, leases, and runtime loading. Reuse it. |
 | Node delivery | System Node | No 100 MB runtime in the bundle. Acceptable because this is a personal tool on Fedora. |
-| Renderer | Written fresh | Only a core subset is needed. `pi-gui`'s 28k-line renderer carries features that are deferred. |
+| Renderer | Forked from `pi-gui`, then trimmed | `pi-gui`'s renderer imports no Electron and no `node:` modules, so it is portable as-is. Trimming beats rewriting the timeline and composer. |
 | Layout | Flat | `src/`, `shared/`, `sidecar/`, `src-tauri/`. No pnpm workspace, no `packages/`. |
 | Data | Separate from `pi-gui` | The app owns its UI state. pi's sessions, auth, and settings stay in `~/.pi` and are shared with the CLI. |
 | Windows | Multiple, designed for. One in v1. | Window identity is part of the protocol from the start, but the first slice ships single-window. |
@@ -106,28 +106,61 @@ The sidecar is a normal Node process with full user privileges, the same trust l
 
 ## 7. Renderer
 
-Fresh React 19 app under `src/`, built by Vite.
+Forked from `pi-gui`'s renderer at commit `ecb7ffb`, then trimmed to the v1 feature set.
 
-Structure:
+The fork is viable because `pi-gui`'s renderer imports no Electron and no `node:` modules. It
+reaches the host only through `window.piApp`, so replacing that object is the whole port. Of
+its 135 files, 40 import a workspace package, and only `@pi-gui/session-driver` is required.
+The remaining workspace imports are dev reload probes and one type-only file.
+
+### 7.1 Kept
+
+| Area | Lines | Note |
+| --- | --- | --- |
+| `app/` | 3,459 | Trimmed to one window and no workbench tabs. |
+| `features/threads/` | 4,294 | Sidebar, session list, new thread flow. |
+| `features/conversation/` | 8,548 | Timeline, composer, streaming, tree modal. The measured viewport and scroll anchoring are the main reason to fork rather than rewrite. |
+| `features/settings/` | 2,755 | Trimmed to providers and models. |
+| `ui/` | 1,555 | Icons and primitives. |
+| `lib/`, `styles/` | small | Kept as-is. |
+
+### 7.2 Deleted
+
+| Area | Lines | Why |
+| --- | --- | --- |
+| `features/workbench/` | 3,416 | Review, diff and terminal are deferred. |
+| `features/extensions/` | 2,127 | Extension views are deferred and are the worst WebKitGTK risk. |
+| `features/command-palette/` | 1,146 | Deferred. |
+| `features/scheduled-tasks/` | 680 | Deferred. |
+
+Apply the same trim to `contracts/`. Delete `scheduled-tasks.ts`, `review.ts`, `workbench.ts`,
+`extension-views.ts`, `extension-actions.ts`, `terminal-model.ts` and `editors.ts`. Reduce
+`theme.ts` to light and dark.
+
+Deleting is the real cost of this decision. The target is a trimmed renderer that still
+compiles, not a renderer with stubbed panels sitting behind dead imports.
+
+### 7.3 Transport shim
+
+The renderer keeps calling `window.piApp`. `src/ipc/` provides it:
 
 ```
-src/
-  main.tsx
-  app/            screen composition, routing between sessions
-  features/
-    threads/      session list, create, rename, delete
-    conversation/ timeline, composer, streaming state
-    runtime/      model and provider selection
-  ipc/            transport client, window.pi shim, fake transport for tests
-  ui/             shared primitives
-  styles/         tokens and base styles
+src/ipc/
+  pi-app.ts      builds window.piApp with pi-gui's method names and signatures
+  transport.ts   Tauri invoke and listen, envelope encoding
+  fake.ts        in-memory transport, so renderer tests need neither Tauri nor Node
 ```
 
-The renderer never imports Node or pi. It talks to the transport client only.
+`pi-app.ts` is a port of `pi-gui`'s `electron/preload.ts`, 620 lines of thin channel wrappers.
+The port is mechanical.
 
-The v1 timeline renders every message without virtualization. `pi-gui` spent significant
-effort on a virtualized, measured viewport with scroll anchoring, and none of that is reused
-here. A long transcript will be slow. This is accepted for v1 and tracked in section 17.
+A channel the renderer calls but the sidecar has not built returns `NOT_IMPLEMENTED` rather
+than hanging, so a missed feature fails visibly instead of freezing a panel.
+
+### 7.4 Renderer purity
+
+The renderer imports no Node, no pi, and no Tauri API outside `src/ipc/`. Port `pi-gui`'s
+`scripts/check-renderer-boundary.mjs` as a test and keep it passing.
 
 ## 8. Rust shell
 
@@ -298,6 +331,7 @@ Transport-level failures originate in Rust and are not sidecar responses:
 | `CHANNEL_NOT_ALLOWED` | Rejected by the Rust allowlist. |
 | `PAYLOAD_TOO_LARGE` | Exceeded the per-channel byte limit. |
 | `INVALID_ENVELOPE` | Malformed line from either side. |
+| `NOT_IMPLEMENTED` | A valid channel the sidecar has not built yet. The forked renderer calls more channels than v1 implements, so this must fail fast rather than hang. |
 
 ### 10.3 Ordering and backpressure
 
@@ -490,16 +524,16 @@ One slice, end to end. Nothing else.
 Single window. No terminal, workbench, review, extensions, scheduled tasks, notifications,
 themes, or command palette.
 
-First implementation steps, in order:
+Work is split into slices. Each gets its own spec and its own branch.
 
-1. Remove the scaffold demo (`greet` command, `App.tsx`, default assets).
-2. Install `rustup` and confirm `cargo tauri dev` opens a window.
-3. Define `shared/protocol.ts` and `shared/channels.ts`.
-4. Write `sidecar/src/transport.ts` and a `app.ping` handler.
-5. Write `src-tauri/src/sidecar.rs` and `forward.rs`, and get `app.ping` round-tripping.
-6. Only then start on pi integration.
+| Slice | Spec | Delivers |
+| --- | --- | --- |
+| 001 walking skeleton | `0002-walking-skeleton.md` | Transport and process lifecycle with no pi. `app.ping` round-trips renderer to Rust to Node and back. |
+| 002 renderer fork | pending | `pi-gui`'s renderer vendored and trimmed, booting to an empty session list against stub handlers. |
+| 003 pi integration | pending | The vendored driver, and real workspace, session, prompt and stream behaviour. |
 
-Step 5 is the walking skeleton. Get it working before touching pi.
+Slice 001 comes first. Get the transport working before adding 20k lines of renderer to debug
+and a 143 MB dependency tree to load.
 
 ## 16. Deferred
 
@@ -526,8 +560,13 @@ Each of these gets its own spec when it starts.
 **Scope drift on a two-week target.** The core loop is nine features, not three. If it slips,
 cut items 6, 8, and 9 and keep prompt and stream working.
 
-**Timeline performance.** No virtualization in v1. Long sessions will stutter. Accept it, and
-do not copy `pi-gui`'s viewport code until the feature list is stable.
+**Fork trim cost.** Keeping about 20k renderer lines and deleting about 7.4k means reading code
+written for a larger app. Deleting a feature is not free, because imports, types and tests reach
+into it. Budget for this and expect a period where the renderer is partly commented out.
+
+**Inherited complexity.** The forked timeline carries `pi-gui`'s measured viewport, scroll
+anchoring and search range logic, which is the subtlest code in the renderer. It also assumes
+it can call more channels than v1 implements.
 
 **pi compat seams.** The vendored driver touches private pi APIs in `compat/`. A pi upgrade can
 break session-file rewriting and project settings. Pin the pi version, and treat upgrades as
@@ -563,13 +602,17 @@ the workspace-add step to need a test hook that bypasses the folder picker.
   vite.config.ts
   tsconfig.json
   .npmrc                        node-linker=hoisted
-  src/                          React renderer
+  src/                          React renderer, forked from pi-gui then trimmed
     main.tsx
     app/
-    features/{threads,conversation,runtime}/
-    ipc/
+    features/{threads,conversation,settings}/
+    ipc/                        piApp shim, transport, fake transport
     ui/
+    lib/
     styles/
+  contracts/                    forked from pi-gui, trimmed
+  packages/
+    session-driver/             forked from pi-gui, used by the renderer
   shared/                       types used by renderer and sidecar
     protocol.ts
     channels.ts
